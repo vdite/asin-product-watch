@@ -1,10 +1,10 @@
-name: amazon-product-watch
+name: asin-product-watch
 
 services:
-  amazon-product-watch:
+  asin-product-watch:
     build: .
-    image: amazon-product-watch:latest
-    container_name: amazon-product-watch
+    image: asin-product-watch:latest
+    container_name: asin-product-watch
     restart: unless-stopped
     ports:
       - "8644:8080"

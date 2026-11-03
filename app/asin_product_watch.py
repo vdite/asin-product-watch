@@ -1,4 +1,4 @@
-"""Amazon Product Watch.
+"""ASIN Product Watch.
 
 Monitors ASINs through Amazon's official Creators API and sends durable
 Pushover notifications when selected product data changes.
@@ -26,18 +26,23 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
-APP_NAME = "Amazon Product Watch"
-APP_VERSION = "1.0.4"
+APP_NAME = "ASIN Product Watch"
+APP_VERSION = "1.1.0"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 STATE_FILE = DATA_DIR / "state.json"
 PORT = int(os.environ.get("PORT", "8080"))
 ICON_FILE = Path(__file__).with_name("icon.svg")
 
-DEFAULT_INTERVAL = max(5, int(os.environ.get("DEFAULT_CHECK_INTERVAL_MINUTES", "60")))
+MAX_CHECK_INTERVAL_MINUTES = 1440
+DEFAULT_INTERVAL = min(
+    MAX_CHECK_INTERVAL_MINUTES,
+    max(5, int(os.environ.get("DEFAULT_CHECK_INTERVAL_MINUTES", "60"))),
+)
 MAX_WATCHLIST_SIZE = max(10, int(os.environ.get("MAX_WATCHLIST_SIZE", "500")))
 MAX_EVENTS = 100
 MAX_PENDING = 100
+PRODUCT_CONTENT_TTL_SECONDS = 24 * 60 * 60
 ASIN_PATTERN = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{10})(?![A-Z0-9])", re.IGNORECASE)
 
 RESOURCES = [
@@ -141,12 +146,75 @@ def save_config(config: dict[str, Any]) -> None:
         atomic_write_json(CONFIG_FILE, config)
 
 
+def parsed_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def product_content_expired(value: Any, now: datetime | None = None) -> bool:
+    parsed = parsed_timestamp(value)
+    if parsed is None:
+        return True
+    reference = now or datetime.now(timezone.utc)
+    return (reference - parsed).total_seconds() >= PRODUCT_CONTENT_TTL_SECONDS
+
+
+def purge_expired_product_content(state: dict[str, Any], now: datetime | None = None) -> bool:
+    """Remove Amazon Product Advertising Content once its 24-hour cache window ends."""
+    reference = now or datetime.now(timezone.utc)
+    changed = False
+    products = state.get("products", {})
+    if isinstance(products, dict):
+        for entry in products.values():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("snapshot") and product_content_expired(entry.get("last_checked"), reference):
+                entry.pop("snapshot", None)
+                entry["content_expired"] = True
+                entry["last_error"] = (
+                    "Produktdaten wurden nach 24 Stunden entfernt; eine neue API-Prüfung steht aus."
+                )
+                entry["missing_offer_streak"] = 0
+                entry["missing_offer_alerted"] = False
+                changed = True
+            confirmed_at = entry.get("last_confirmed_at")
+            if entry.get("last_confirmed_snapshot") and product_content_expired(confirmed_at, reference):
+                entry.pop("last_confirmed_snapshot", None)
+                entry.pop("last_confirmed_at", None)
+                changed = True
+
+    for key, timestamp_key in (("events", "at"), ("pending_notifications", "created_at")):
+        values = state.get(key, [])
+        if not isinstance(values, list):
+            state[key] = []
+            changed = True
+            continue
+        retained = [
+            item
+            for item in values
+            if isinstance(item, dict) and not product_content_expired(item.get(timestamp_key), reference)
+        ]
+        if len(retained) != len(values):
+            state[key] = retained
+            changed = True
+    return changed
+
+
 def load_state() -> dict[str, Any]:
     with storage_lock:
-        return load_json(STATE_FILE, STATE_DEFAULTS)
+        state = load_json(STATE_FILE, STATE_DEFAULTS)
+        if purge_expired_product_content(state):
+            atomic_write_json(STATE_FILE, state)
+        return state
 
 
 def save_state(state: dict[str, Any]) -> None:
+    purge_expired_product_content(state)
     state["events"] = list(state.get("events", []))[-MAX_EVENTS:]
     state["pending_notifications"] = list(state.get("pending_notifications", []))[-MAX_PENDING:]
     with storage_lock:
@@ -303,7 +371,7 @@ def request_json(url: str, payload: dict[str, Any], headers: dict[str, str] | No
     request_headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": f"AmazonProductWatch/{APP_VERSION}",
+        "User-Agent": f"ASINProductWatch/{APP_VERSION}",
         **(headers or {}),
     }
     request = urllib.request.Request(url, data=data, headers=request_headers, method="POST")
@@ -582,7 +650,7 @@ class PushoverSettings:
         return missing
 
 
-def send_pushover(title: str, message: str, url: str = "", url_title: str = "Bei Amazon öffnen") -> None:
+def send_pushover(title: str, message: str, url: str = "", url_title: str = "Produkt öffnen") -> None:
     settings = PushoverSettings.from_env()
     missing = settings.missing()
     if missing:
@@ -600,7 +668,7 @@ def send_pushover(title: str, message: str, url: str = "", url_title: str = "Bei
     request = urllib.request.Request(
         "https://api.pushover.net/1/messages.json",
         data=urllib.parse.urlencode(payload).encode("utf-8"),
-        headers={"User-Agent": f"AmazonProductWatch/{APP_VERSION}"},
+        headers={"User-Agent": f"ASINProductWatch/{APP_VERSION}"},
         method="POST",
     )
     try:
@@ -655,7 +723,7 @@ def queue_change_notification(
             "id": digest,
             "event_id": event["id"],
             "asin": asin,
-            "title": f"Amazon-Änderung: {short_value(product_name, 120)}",
+            "title": f"ASIN-Änderung: {short_value(product_name, 120)}",
             "message": body,
             "url": product_url(asin, snapshot, settings),
             "created_at": event["at"],
@@ -672,7 +740,7 @@ def deliver_pending(state: dict[str, Any]) -> tuple[int, int]:
     for notification in state.get("pending_notifications", []):
         try:
             send_pushover(
-                str(notification.get("title", "Amazon Product Watch")),
+                str(notification.get("title", APP_NAME)),
                 str(notification.get("message", "Produktänderung")),
                 str(notification.get("url", "")),
             )
@@ -734,6 +802,7 @@ def run_check() -> None:
                         "last_checked": now,
                         "last_error": snapshot.get("error_message") if not snapshot.get("accessible") else "",
                     }
+                    entry.pop("content_expired", None)
                     changes: list[str] = []
                     if old_snapshot is None:
                         entry["last_changed"] = now
@@ -745,6 +814,7 @@ def run_check() -> None:
                             entry["missing_offer_streak"] = 0
                             entry["missing_offer_alerted"] = False
                             entry["last_confirmed_snapshot"] = snapshot
+                            entry["last_confirmed_at"] = now
                             unavailable_initially = not snapshot.get("accessible") or snapshot.get(
                                 "availability_type"
                             ) in {"OUT_OF_STOCK", "OUTOFSTOCK", "UNAVAILABLE"}
@@ -763,6 +833,7 @@ def run_check() -> None:
                         entry["missing_offer_alerted"] = already_alerted
                         if not old_entry.get("last_confirmed_snapshot") and not has_no_featured_offer(old_snapshot):
                             entry["last_confirmed_snapshot"] = old_snapshot
+                            entry["last_confirmed_at"] = old_entry.get("last_checked")
                         changes.extend(diff_catalog_data(old_snapshot, snapshot))
                         if streak >= 2 and not already_alerted:
                             changes.insert(
@@ -778,6 +849,7 @@ def run_check() -> None:
                         entry["missing_offer_streak"] = 0
                         entry["missing_offer_alerted"] = False
                         entry["last_confirmed_snapshot"] = snapshot
+                        entry["last_confirmed_at"] = now
                         if was_alerted:
                             changes = [
                                 "Featured Offer wird wieder über die Creators API geliefert",
@@ -834,7 +906,10 @@ def scheduler() -> None:
     while True:
         run_check()
         config = load_config()
-        interval = max(5, int(config.get("check_interval_minutes", DEFAULT_INTERVAL)))
+        interval = min(
+            MAX_CHECK_INTERVAL_MINUTES,
+            max(5, int(config.get("check_interval_minutes", DEFAULT_INTERVAL))),
+        )
         check_trigger.wait(timeout=interval * 60)
         check_trigger.clear()
 
@@ -947,7 +1022,7 @@ PAGE = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Amazon Product Watch</title>
+  <title>ASIN Product Watch</title>
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <style>
     :root {{ --bg:#f5f6f8;--card:#fff;--text:#17202e;--muted:#687386;--line:#dfe3e8;--accent:#ff9900;--accent2:#232f3e;--good:#137333;--goodbg:#e6f4ea;--bad:#b3261e;--badbg:#fce8e6;--warn:#8a4b00;--warnbg:#fff4df;--shadow:0 8px 28px rgba(35,47,62,.08); }}
@@ -962,12 +1037,12 @@ PAGE = """<!doctype html>
     .status-list{{display:grid;gap:9px}} .status-row{{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px}} .status-row:last-child{{border:0;padding:0}} .dot{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--bad)}} .dot.ok{{background:var(--good)}}
     .product-card{{display:grid;grid-template-columns:92px 1fr;gap:14px;padding:15px 0;border-top:1px solid var(--line)}} .product-card:first-child{{border-top:0;padding-top:2px}} .product-image{{width:92px;height:92px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:10px}} .product-image.placeholder{{display:grid;place-items:center;font-size:30px;background:var(--bg)}} .product-heading{{display:flex;justify-content:space-between;gap:12px;align-items:start}} code{{color:var(--muted);font-size:12px}} .badge{{white-space:nowrap;border-radius:999px;padding:4px 8px;font-size:12px;background:var(--line)}} .badge.good{{background:var(--goodbg);color:var(--good)}} .badge.bad{{background:var(--badbg);color:var(--bad)}} .badge.warn{{background:var(--warnbg);color:var(--warn)}}
     .facts{{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:3px 16px;margin:9px 0;color:var(--muted);font-size:13px}} .facts b{{color:var(--text);font-weight:600}} .card-actions{{display:flex;gap:14px;align-items:center;font-size:13px}} a{{color:#2877c7}} .card-actions form{{margin:0}} button.link{{padding:0;background:none;color:#2877c7;font:inherit}} button.danger{{color:var(--bad)}} .error-line{{font-size:12px;color:var(--bad);margin:5px 0;overflow-wrap:anywhere}}
-    .events{{list-style:none;margin:0;padding:0}} .events li{{border-top:1px solid var(--line);padding:10px 0}} .events li:first-child{{border:0;padding-top:0}} .events time{{color:var(--muted);font-size:12px}} .sent{{color:var(--good);font-size:12px;margin-left:7px}} .failed,.pending{{color:var(--warn);font-size:12px;margin-left:7px}} .empty{{padding:18px;text-align:center;color:var(--muted);background:var(--bg);border-radius:10px}} footer{{max-width:1060px;margin:auto;padding:4px 18px 28px;color:var(--muted);font-size:12px}}
+    .events{{list-style:none;margin:0;padding:0}} .events li{{border-top:1px solid var(--line);padding:10px 0}} .events li:first-child{{border:0;padding-top:0}} .events time{{color:var(--muted);font-size:12px}} .sent{{color:var(--good);font-size:12px;margin-left:7px}} .failed,.pending{{color:var(--warn);font-size:12px;margin-left:7px}} .empty{{padding:18px;text-align:center;color:var(--muted);background:var(--bg);border-radius:10px}} .legal-note{{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}} footer{{max-width:1060px;margin:auto;padding:4px 18px 28px;color:var(--muted);font-size:11px}}
     @media(max-width:560px){{.product-card{{grid-template-columns:64px 1fr}}.product-image{{width:64px;height:64px}}.product-heading{{display:block}}.badge{{display:inline-block;margin-top:6px}}.facts{{grid-template-columns:1fr}}.inline{{display:block}}.inline button{{margin-top:8px;width:100%}}}}
   </style>
 </head>
 <body>
-<header><div class="header-inner"><img class="logo" src="/icon.svg" alt=""><div><h1>Amazon Product Watch</h1><p>Offizielle Creators API · keine Shop-Seiten werden gescrapt</p></div></div></header>
+<header><div class="header-inner"><img class="logo" src="/icon.svg" alt=""><div><h1>ASIN Product Watch</h1><p>Offizielle Creators API · keine Shop-Seiten werden gescrapt</p></div></div></header>
 <main>
   {flash}
   <div class="grid">
@@ -983,6 +1058,7 @@ PAGE = """<!doctype html>
       <div class="card">
         <div class="product-heading"><h2>Watchlist · {count} Produkt(e)</h2>{running}</div>
         {products}
+        <div class="legal-note">Product prices and availability are accurate as of the date/time indicated and are subject to change. Any price and availability information displayed on {marketplace} at the time of purchase will apply to the purchase of this product.</div>
       </div>
     </section>
     <aside>
@@ -1001,7 +1077,7 @@ PAGE = """<!doctype html>
         <h2>Prüfintervall</h2>
         <form method="post" action="/settings" class="inline">
           <input type="hidden" name="csrf" value="{csrf}">
-          <label><span>Minuten (mindestens 5)</span><input type="number" name="interval" min="5" max="10080" value="{interval}" required></label>
+          <label><span>Minuten (5 bis 1440)</span><input type="number" name="interval" min="5" max="1440" value="{interval}" required></label>
           <button type="submit">Speichern</button>
         </form>
       </div>
@@ -1014,7 +1090,7 @@ PAGE = """<!doctype html>
   </div>
   <section class="card"><h2>Letzte Ereignisse</h2><ul class="events">{events}</ul></section>
 </main>
-<footer>Version {version} · Zugangsdaten werden ausschließlich aus Container-Umgebungsvariablen gelesen. Die Weboberfläche hat keinen Login und gehört nur ins vertrauenswürdige Heimnetz.</footer>
+<footer><p>Version {version} · Zugangsdaten werden ausschließlich aus Container-Umgebungsvariablen gelesen. Die Weboberfläche hat keinen Login und gehört nur ins vertrauenswürdige Heimnetz.</p><p>CERTAIN CONTENT THAT APPEARS IN THIS APPLICATION COMES FROM AMAZON EUROPE CORE S.à r.l. THIS CONTENT IS PROVIDED "AS IS" AND IS SUBJECT TO CHANGE OR REMOVAL AT ANY TIME.</p><p>Amazon and the Amazon logo are trademarks of Amazon.com, Inc. or its affiliates.</p></footer>
 </body></html>"""
 
 
@@ -1048,7 +1124,7 @@ def render_page(message: str = "", is_error: bool = False) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"AmazonProductWatch/{APP_VERSION}"
+    server_version = f"ASINProductWatch/{APP_VERSION}"
 
     def log_message(self, format_string: str, *args: Any) -> None:
         log(f"Web: {format_string % args}")
@@ -1114,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(
                 export_asin_list(load_config()),
                 "text/plain; charset=utf-8",
-                extra_headers={"Content-Disposition": 'attachment; filename="amazon-product-watch-asins.txt"'},
+                extra_headers={"Content-Disposition": 'attachment; filename="asin-product-watch-asins.txt"'},
             )
         else:
             self.send_error(404)
@@ -1153,8 +1229,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(f"{asin} wurde entfernt.")
             elif path == "/settings":
                 interval = int(form.get("interval", [str(DEFAULT_INTERVAL)])[0])
-                if not 5 <= interval <= 10080:
-                    raise AppError("Das Intervall muss zwischen 5 und 10080 Minuten liegen.")
+                if not 5 <= interval <= MAX_CHECK_INTERVAL_MINUTES:
+                    raise AppError("Das Intervall muss zwischen 5 und 1440 Minuten liegen.")
                 config = load_config()
                 config["check_interval_minutes"] = interval
                 save_config(config)
@@ -1165,7 +1241,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("Prüfung wurde gestartet.")
             elif path == "/test-pushover":
                 send_pushover(
-                    "Amazon Product Watch",
+                    APP_NAME,
                     "Test erfolgreich: Pushover ist korrekt eingerichtet.",
                 )
                 self.redirect("Pushover-Testnachricht wurde gesendet.")

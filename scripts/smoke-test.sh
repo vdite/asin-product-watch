@@ -3,13 +3,13 @@ set -Eeuo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd "${script_dir}/.." && pwd)"
-image_name="amazon-product-watch:smoke-test"
-container_name="amazon-product-watch-smoke-$$"
-smoke_data="$(mktemp -d "${TMPDIR:-/tmp}/amazon-product-watch-smoke.XXXXXX")"
+image_name="asin-product-watch:smoke-test"
+container_name="asin-product-watch-smoke-$$"
+smoke_data="$(mktemp -d "${TMPDIR:-/tmp}/asin-product-watch-smoke.XXXXXX")"
 
 cleanup() {
   docker rm -f "${container_name}" >/dev/null 2>&1 || true
-  if [[ "${smoke_data}" == *amazon-product-watch-smoke.* && -d "${smoke_data}" ]]; then
+  if [[ "${smoke_data}" == *asin-product-watch-smoke.* && -d "${smoke_data}" ]]; then
     rm -rf -- "${smoke_data}"
   fi
 }
@@ -59,7 +59,7 @@ if [[ "${health_json}" != *'"status": "ok"'* ]]; then
   echo "Unerwartete Health-Antwort: ${health_json}" >&2
   exit 1
 fi
-if [[ "${page_html}" != *'<title>Amazon Product Watch</title>'* ]]; then
+if [[ "${page_html}" != *'<title>ASIN Product Watch</title>'* ]]; then
   echo "Weboberfläche enthält nicht den erwarteten Seitentitel." >&2
   exit 1
 fi

@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-APP_PATH = Path(__file__).parents[1] / "app" / "amazon_product_watch.py"
-SPEC = importlib.util.spec_from_file_location("amazon_product_watch", APP_PATH)
+APP_PATH = Path(__file__).parents[1] / "app" / "asin_product_watch.py"
+SPEC = importlib.util.spec_from_file_location("asin_product_watch", APP_PATH)
 app = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = app
 SPEC.loader.exec_module(app)
@@ -150,7 +150,9 @@ class ProductWatchTests(unittest.TestCase):
                 app.STATE_FILE = app.DATA_DIR / "state.json"
                 app.ensure_storage()
                 page = app.render_page()
-                self.assertIn("Amazon Product Watch", page)
+                self.assertIn("ASIN Product Watch", page)
+                self.assertIn("PRODUCT PRICES AND AVAILABILITY".lower(), page.lower())
+                self.assertIn("COMES FROM AMAZON EUROPE CORE", page)
                 self.assertIn("ASINs beobachten", page)
                 self.assertIn("ASIN-Liste exportieren", page)
                 self.assertTrue(app.CONFIG_FILE.exists())
@@ -162,6 +164,48 @@ class ProductWatchTests(unittest.TestCase):
         with patch.dict(app.os.environ, {"TZ": "Europe/Berlin"}, clear=False):
             self.assertEqual(app.human_time("2026-11-03T21:10:45Z"), "03.11.2026 22:10:45 CET")
             self.assertEqual(app.human_time("2026-07-03T21:10:45Z"), "03.07.2026 23:10:45 CEST")
+
+    def test_expired_product_content_is_removed_but_asin_remains(self):
+        state = {
+            "products": {
+                "B09B2SBHQK": {
+                    "snapshot": {"title": "Expired", "image_url": "https://example.test/image.jpg"},
+                    "last_confirmed_snapshot": {"title": "Expired"},
+                    "last_checked": "2026-11-01T10:00:00Z",
+                    "last_confirmed_at": "2026-11-01T10:00:00Z",
+                }
+            },
+            "events": [{"at": "2026-11-01T10:00:00Z", "message": "Expired"}],
+            "pending_notifications": [
+                {"created_at": "2026-11-01T10:00:00Z", "message": "Expired"}
+            ],
+        }
+        changed = app.purge_expired_product_content(
+            state, app.datetime.fromisoformat("2026-11-03T10:00:00+00:00")
+        )
+        self.assertTrue(changed)
+        self.assertIn("B09B2SBHQK", state["products"])
+        self.assertNotIn("snapshot", state["products"]["B09B2SBHQK"])
+        self.assertNotIn("last_confirmed_snapshot", state["products"]["B09B2SBHQK"])
+        self.assertEqual(state["events"], [])
+        self.assertEqual(state["pending_notifications"], [])
+
+    def test_product_content_within_24_hours_is_retained(self):
+        state = {
+            "products": {
+                "B09B2SBHQK": {
+                    "snapshot": {"title": "Fresh"},
+                    "last_checked": "2026-11-03T09:00:01Z",
+                }
+            },
+            "events": [],
+            "pending_notifications": [],
+        }
+        changed = app.purge_expired_product_content(
+            state, app.datetime.fromisoformat("2026-11-04T09:00:00+00:00")
+        )
+        self.assertFalse(changed)
+        self.assertEqual(state["products"]["B09B2SBHQK"]["snapshot"]["title"], "Fresh")
 
     def test_check_baseline_then_price_change_sends_notification(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:

@@ -1,16 +1,16 @@
 # Portainer-Stack für das öffentliche Multi-Arch-Image aus GitHub Container Registry.
-name: amazon-product-watch
+name: asin-product-watch
 
 services:
-  amazon-product-watch:
-    image: ghcr.io/vdite/amazon-product-watch:latest
+  asin-product-watch:
+    image: ghcr.io/vdite/asin-product-watch:latest
     pull_policy: always
-    container_name: amazon-product-watch
+    container_name: asin-product-watch
     restart: unless-stopped
     ports:
       - "8644:8080"
     volumes:
-      - /DATA/AppData/amazon-product-watch:/data
+      - /DATA/AppData/asin-product-watch:/data
     environment:
       AMAZON_CREDENTIAL_ID: "${AMAZON_CREDENTIAL_ID:-}"
       AMAZON_CREDENTIAL_SECRET: "${AMAZON_CREDENTIAL_SECRET:-}"

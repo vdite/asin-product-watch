@@ -1,9 +1,9 @@
-name: amazon-product-watch
+name: asin-product-watch
 
 services:
-  amazon-product-watch:
-    image: ghcr.io/vdite/amazon-product-watch:latest
-    container_name: amazon-product-watch
+  asin-product-watch:
+    image: ghcr.io/vdite/asin-product-watch:latest
+    container_name: asin-product-watch
     restart: unless-stopped
     ports:
       - target: 8080
@@ -11,7 +11,7 @@ services:
         protocol: tcp
     volumes:
       - type: bind
-        source: /DATA/AppData/amazon-product-watch
+        source: /DATA/AppData/asin-product-watch
         target: /data
     environment:
       AMAZON_CREDENTIAL_ID: ""
@@ -26,20 +26,18 @@ services:
       TZ: Europe/Berlin
 
 x-casaos:
-  id: de.mizine.amazon-product-watch
-  main: amazon-product-watch
+  id: de.mizine.asin-product-watch
+  main: asin-product-watch
   index: /
   port_map: "8644"
   scheme: http
-  icon: https://raw.githubusercontent.com/vdite/amazon-product-watch/main/assets/icon.svg
-  screenshot_link:
-    - assets/screenshots/dashboard.png
+  icon: https://raw.githubusercontent.com/vdite/asin-product-watch/main/assets/icon.svg
   title:
-    en_US: Amazon Product Watch
-    de_DE: Amazon Produkt-Wächter
+    en_US: ASIN Product Watch
+    de_DE: ASIN Produkt-Wächter
   tagline:
-    en_US: Monitor ASIN changes with Amazon's official API
-    de_DE: ASIN-Änderungen über Amazons offizielle API überwachen
+    en_US: Monitor ASIN changes with the official Creators API
+    de_DE: ASIN-Änderungen über die offizielle Creators API überwachen
   description:
     en_US: Watches Amazon products through the official Creators API and sends durable Pushover notifications for availability, price and catalog changes.
     de_DE: Beobachtet Amazon-Produkte über die offizielle Creators API und sendet Pushover-Nachrichten bei Verfügbarkeits-, Preis- und Katalogänderungen.
@@ -53,10 +51,10 @@ x-casaos:
   architectures:
     - amd64
     - arm64
-  version: "1.0.4"
+  version: "1.1.0"
   update_at: "2026-11-03"
   release_notes:
-    en_US: Adds a plain-text export containing only the watched ASINs, one per line.
-    de_DE: Ergänzt einen Klartext-Export nur mit den beobachteten ASINs, jeweils eine pro Zeile.
-  repo: https://github.com/vdite/amazon-product-watch
-  docs: https://github.com/vdite/amazon-product-watch#readme
+    en_US: Adds Amazon API compliance notices, 24-hour cache expiration and the trademark-safe app name.
+    de_DE: Ergänzt API-Pflichthinweise, 24-Stunden-Cache-Ablauf und den markensicheren App-Namen.
+  repo: https://github.com/vdite/asin-product-watch
+  docs: https://github.com/vdite/asin-product-watch#readme
