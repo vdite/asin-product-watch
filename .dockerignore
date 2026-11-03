@@ -1,0 +1,16 @@
+.git
+.github
+.env
+data
+tests
+__pycache__
+*.py[cod]
+.DS_Store
+.agents
+.codex
+agents_chat.md
+*resume*.txt
+*handoff*.md
+*review-notes*
+plan*.md
+*draft*.md

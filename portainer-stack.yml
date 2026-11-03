@@ -1,0 +1,23 @@
+name: amazon-product-watch
+
+services:
+  amazon-product-watch:
+    image: amazon-product-watch:local
+    pull_policy: never
+    container_name: amazon-product-watch
+    restart: unless-stopped
+    ports:
+      - "8644:8080"
+    volumes:
+      - /DATA/AppData/amazon-product-watch:/data
+    environment:
+      AMAZON_CREDENTIAL_ID: "${AMAZON_CREDENTIAL_ID:-}"
+      AMAZON_CREDENTIAL_SECRET: "${AMAZON_CREDENTIAL_SECRET:-}"
+      AMAZON_CREDENTIAL_VERSION: "${AMAZON_CREDENTIAL_VERSION:-3.2}"
+      AMAZON_PARTNER_TAG: "${AMAZON_PARTNER_TAG:-}"
+      AMAZON_MARKETPLACE: "${AMAZON_MARKETPLACE:-www.amazon.de}"
+      PUSHOVER_APP_TOKEN: "${PUSHOVER_APP_TOKEN:-}"
+      PUSHOVER_USER_KEY: "${PUSHOVER_USER_KEY:-}"
+      DEFAULT_CHECK_INTERVAL_MINUTES: "${DEFAULT_CHECK_INTERVAL_MINUTES:-60}"
+      MAX_WATCHLIST_SIZE: "${MAX_WATCHLIST_SIZE:-500}"
+      TZ: Europe/Berlin

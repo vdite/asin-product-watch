@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Product Watch icon">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34465b"/>
+      <stop offset="1" stop-color="#17202d"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <path d="M125 181 256 111l131 70v151L256 402l-131-70V181Z" fill="#fff" opacity=".96"/>
+  <path d="m126 181 130 70 130-70M256 251v151" fill="none" stroke="#d9e0e8" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M313 145 183 216" fill="none" stroke="#ff9900" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="366" cy="353" r="82" fill="#ff9900" stroke="#17202d" stroke-width="16"/>
+  <circle cx="366" cy="353" r="43" fill="none" stroke="#17202d" stroke-width="18"/>
+  <path d="m397 385 45 45" fill="none" stroke="#17202d" stroke-width="22" stroke-linecap="round"/>
+</svg>
