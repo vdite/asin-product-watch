@@ -1,3 +1,5 @@
+# Nur für das direkt in Portainer gebaute lokale Image.
+# Für das öffentliche GHCR-Image portainer-ghcr-stack.yml verwenden.
 name: amazon-product-watch
 
 services:

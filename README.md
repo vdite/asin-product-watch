@@ -72,6 +72,8 @@ Persistente Daten liegen unter `/DATA/AppData/amazon-product-watch`. Die aktuell
 
 Das Image kann alternativ vollständig lokal auf dem ZimaOS-Rechner gebaut werden. Die genaue Klickfolge, das spezielle Upload-Dockerfile und die Stack-Datei stehen in [`PORTAINER.md`](PORTAINER.md). Dabei ist keine Registry nötig.
 
+Für Portainer mit dem bereits veröffentlichten GHCR-Image steht [`portainer-ghcr-stack.yml`](portainer-ghcr-stack.yml) bereit. Der lokale [`portainer-stack.yml`](portainer-stack.yml) enthält dagegen absichtlich `pull_policy: never` und darf nicht lediglich durch Austausch des Image-Namens auf GHCR umgestellt werden.
+
 ## Lokales Docker Compose
 
 ```bash

@@ -2,6 +2,9 @@
 
 Damit wird das Image auf dem ZimaOS-/Portainer-Rechner gebaut. GitHub, GHCR und ein Architektur-Export vom Mac sind nicht nötig.
 
+> [!IMPORTANT]
+> Diese Anleitung und [`portainer-stack.yml`](portainer-stack.yml) verwenden ein **lokal gebautes Image** und deshalb `pull_policy: never`. Für das veröffentlichte GHCR-Image stattdessen [`portainer-ghcr-stack.yml`](portainer-ghcr-stack.yml) verwenden; diese Variante zieht `ghcr.io/vdite/amazon-product-watch:latest` automatisch.
+
 ## 1. Image bauen
 
 1. In Portainer das ZimaOS-Docker-Environment öffnen.
