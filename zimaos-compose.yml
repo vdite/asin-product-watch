@@ -32,6 +32,8 @@ x-casaos:
   port_map: "8644"
   scheme: http
   icon: https://raw.githubusercontent.com/vdite/amazon-product-watch/main/assets/icon.svg
+  screenshot_link:
+    - assets/screenshots/dashboard.png
   title:
     en_US: Amazon Product Watch
     de_DE: Amazon Produkt-Wächter
