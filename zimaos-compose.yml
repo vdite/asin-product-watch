@@ -17,7 +17,7 @@ services:
       AMAZON_CREDENTIAL_ID: ""
       AMAZON_CREDENTIAL_SECRET: ""
       AMAZON_CREDENTIAL_VERSION: "3.2"
-      AMAZON_PARTNER_TAG: "mizine-21"
+      AMAZON_PARTNER_TAG: ""
       AMAZON_MARKETPLACE: "www.amazon.de"
       PUSHOVER_APP_TOKEN: ""
       PUSHOVER_USER_KEY: ""

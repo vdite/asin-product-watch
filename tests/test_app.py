@@ -30,6 +30,13 @@ class ProductWatchTests(unittest.TestCase):
         self.assertEqual(exported, b"B09B2SBHQK\nB0ABC12345\n")
         self.assertNotIn(b"must-not-leak", exported)
 
+    def test_zimaos_template_has_no_default_partner_tag(self):
+        template = (APP_PATH.parents[1] / "zimaos-compose.yml").read_text(encoding="utf-8")
+        partner_tag_line = next(
+            line for line in template.splitlines() if "AMAZON_PARTNER_TAG:" in line
+        )
+        self.assertEqual(partner_tag_line.strip(), 'AMAZON_PARTNER_TAG: ""')
+
     def test_normalize_item_prefers_buy_box(self):
         item = {
             "asin": "B09B2SBHQK",
