@@ -11,6 +11,10 @@ Amazon Affiliates sollten regelmäßig prüfen, ob ihre beworbenen Produkte noch
 > [!WARNING]
 > **Nur im privaten lokalen Netzwerk betreiben.** Die Weboberfläche besitzt keinen Login und keinen Passwortschutz. Port **8644** darf nicht per Router-Portfreigabe, öffentlicher Domain oder öffentlich erreichbarem Reverse Proxy ins Internet gestellt werden.
 
+![ASIN Product Watch mit fiktiven technischen Demo-Produkten](assets/screenshots/dashboard-demo.png)
+
+*Der Screenshot verwendet ausschließlich fiktive Demo-Produkte und synthetisch erzeugte Produktbilder.*
+
 ## Was überwacht wird
 
 - Erreichbarkeit des Produkts über die API
