@@ -2,7 +2,7 @@
 
 Eine ZimaOS-/Docker-App, die beliebige ASINs über Amazons **offizielle Creators API** beobachtet und bei Änderungen Pushover-Nachrichten sendet. Die App liest keine Amazon-Shopseiten aus und benötigt keinen Browser-Scraper.
 
-Die Weboberfläche läuft standardmäßig auf Port **8644**. Dort lassen sich ASINs oder komplette Amazon-Produktlinks hinzufügen, entfernen und sofort prüfen.
+Die Weboberfläche läuft standardmäßig auf Port **8644**. Dort lassen sich ASINs (keine Links) hinzufügen, entfernen und sofort prüfen.
 
 ## Motivation
 
@@ -53,6 +53,7 @@ Für den Zugriff ist ein final akzeptiertes Amazon-PartnerNet-/Associates-Konto 
 | `PUSHOVER_APP_TOKEN` | API-Token deiner Pushover-Anwendung | erforderlich |
 | `PUSHOVER_USER_KEY` | Pushover User/Group Key | erforderlich |
 | `DEFAULT_CHECK_INTERVAL_MINUTES` | Startwert des Intervalls | optional, `60` |
+| `DEFAULT_PRICE_THRESHOLD_PERCENT` | Startwert der Preisschwelle in Prozent (`0` = jede Änderung) | optional, `10` |
 | `MAX_WATCHLIST_SIZE` | maximale Anzahl ASINs | optional, `500` |
 | `TZ` | Anzeigezeitzone inklusive Sommerzeit | optional, `Europe/Berlin` |
 
@@ -101,7 +102,7 @@ Der Workflow [`.github/workflows/docker-publish.yml`](.github/workflows/docker-p
 
 ## Daten und Verhalten
 
-- `config.json`: Watchlist, Intervall und CSRF-Token
+- `config.json`: Watchlist, Intervall, Preisschwelle und CSRF-Token
 - `state.json`: frischer Produktstand, Ereignisse und ausstehende Pushover-Nachrichten
 - GetItems wird in Batches von maximal zehn ASINs aufgerufen.
 - Zwischen mehreren Batches wartet die App mindestens eine Sekunde, passend zum anfänglichen Amazon-Limit von höchstens einem Request pro Sekunde.
@@ -109,6 +110,7 @@ Der Workflow [`.github/workflows/docker-publish.yml`](.github/workflows/docker-p
 - Ein erfolgreiches GetItems-Ergebnis, in dem eine ASIN als `ItemNotAccessible` gemeldet oder nicht zurückgegeben wird, gilt als nicht verfügbar bzw. nicht zugänglich.
 - Fehlt `offersV2.listings` oder liefert Amazon lediglich einen `OUT_OF_STOCK`-Platzhalter ohne Preis und Verkäufer, zeigt die App gelb „kein Featured Offer in der API“ statt „nicht auf Lager“. Erst zwei aufeinanderfolgende Prüfungen ohne Featured Offer erzeugen eine Warnung. Die Amazon-Webseite kann für eine konkrete Lieferadresse trotzdem ein Angebot anzeigen.
 - Amazon-Produktdaten, Bild-URLs, Ereignisse und ausstehende Nachrichten werden spätestens nach 24 Stunden entfernt, wenn sie nicht erfolgreich über die API erneuert wurden. ASINs bleiben erhalten.
+- Preisänderungen werden erst gemeldet, wenn sie die in der Weboberfläche einstellbare Schwelle erreichen (Standard 10 %, `0` meldet jede Änderung). Verglichen wird mit dem zuletzt gemeldeten Preis, sodass sich viele kleine Schritte aufsummieren. Wegen der 24-Stunden-Regel verfällt dieser Vergleichspreis, wenn er einen Tag lang nicht bestätigt wurde; dann gilt der zuletzt abgerufene Preis als neuer Ausgangswert. Ein verschwundener oder neu auftauchender Preis und ein Währungswechsel werden immer gemeldet.
 - Das konfigurierbare Prüfintervall ist deshalb auf höchstens 1440 Minuten begrenzt; standardmäßig wird stündlich aktualisiert.
 
 Die Weboberfläche besitzt keinen Login. Sie darf ausschließlich im vertrauenswürdigen lokalen Netzwerk erreichbar sein und nicht ins öffentliche Internet freigegeben werden.

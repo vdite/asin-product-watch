@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import secrets
@@ -27,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 APP_NAME = "ASIN Product Watch"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 STATE_FILE = DATA_DIR / "state.json"
@@ -39,11 +40,28 @@ DEFAULT_INTERVAL = min(
     MAX_CHECK_INTERVAL_MINUTES,
     max(5, int(os.environ.get("DEFAULT_CHECK_INTERVAL_MINUTES", "60"))),
 )
+MAX_PRICE_THRESHOLD_PERCENT = 100.0
+
+
+def parse_price_threshold(value: Any) -> float:
+    """Parse a percentage between 0 and 100; accepts a decimal comma."""
+    threshold = float(str(value).strip().replace(",", "."))
+    if not math.isfinite(threshold) or not 0 <= threshold <= MAX_PRICE_THRESHOLD_PERCENT:
+        raise ValueError(f"Die Preisschwelle muss zwischen 0 und {MAX_PRICE_THRESHOLD_PERCENT:g} % liegen.")
+    return round(threshold, 2)
+
+
+try:
+    DEFAULT_PRICE_THRESHOLD = parse_price_threshold(os.environ.get("DEFAULT_PRICE_THRESHOLD_PERCENT", "10"))
+except ValueError:
+    DEFAULT_PRICE_THRESHOLD = 10.0
 MAX_WATCHLIST_SIZE = max(10, int(os.environ.get("MAX_WATCHLIST_SIZE", "500")))
 MAX_EVENTS = 100
 MAX_PENDING = 100
 PRODUCT_CONTENT_TTL_SECONDS = 24 * 60 * 60
 ASIN_PATTERN = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{10})(?![A-Z0-9])", re.IGNORECASE)
+ASIN_INPUT_PATTERN = re.compile(r"[A-Z0-9]{10}")
+ASIN_INPUT_SEPARATORS = re.compile(r"[\s,;]+")
 
 RESOURCES = [
     "images.primary.medium",
@@ -82,6 +100,7 @@ AVAILABILITY_LABELS = {
 CONFIG_DEFAULTS = {
     "asins": [],
     "check_interval_minutes": DEFAULT_INTERVAL,
+    "price_threshold_percent": DEFAULT_PRICE_THRESHOLD,
     "csrf_token": "",
 }
 
@@ -187,6 +206,12 @@ def purge_expired_product_content(state: dict[str, Any], now: datetime | None = 
                 entry.pop("last_confirmed_snapshot", None)
                 entry.pop("last_confirmed_at", None)
                 changed = True
+            price_reference = entry.get("price_reference")
+            if price_reference is not None and (
+                not isinstance(price_reference, dict) or product_content_expired(price_reference.get("at"), reference)
+            ):
+                entry.pop("price_reference", None)
+                changed = True
 
     for key, timestamp_key in (("events", "at"), ("pending_notifications", "created_at")):
         values = state.get(key, [])
@@ -230,14 +255,40 @@ def ensure_storage() -> None:
         save_state(dict(STATE_DEFAULTS))
 
 
+def is_asin(value: str) -> bool:
+    """10 letters/digits with at least one digit (all ASINs and ISBN-10s have one)."""
+    return bool(ASIN_INPUT_PATTERN.fullmatch(value)) and any(char.isdigit() for char in value)
+
+
 def extract_asins(raw: str) -> list[str]:
-    """Extract unique 10-character ASINs from text or Amazon URLs."""
+    """Find ASINs mentioned in free text such as API error messages."""
     found: list[str] = []
-    seen: set[str] = set()
     for match in ASIN_PATTERN.findall(raw.upper()):
-        if match not in seen:
+        if is_asin(match) and match not in found:
             found.append(match)
-            seen.add(match)
+    return found
+
+
+def parse_asin_input(raw: str) -> list[str]:
+    """Parse user input that must consist solely of ASINs; links and other text are rejected."""
+    found: list[str] = []
+    invalid: list[str] = []
+    for token in ASIN_INPUT_SEPARATORS.split(raw.strip()):
+        if not token:
+            continue
+        candidate = token.upper()
+        if not is_asin(candidate):
+            invalid.append(token)
+        elif candidate not in found:
+            found.append(candidate)
+    if invalid:
+        shown = ", ".join(short_value(token, 40) for token in invalid[:3])
+        more = f" und {len(invalid) - 3} weitere" if len(invalid) > 3 else ""
+        raise AppError(
+            f"Nur ASINs eingeben (10 Buchstaben/Ziffern, z. B. B09B2SBHQK), keine Links. Ungültig: {shown}{more}"
+        )
+    if not found:
+        raise AppError("Keine ASIN eingegeben.")
     return found
 
 
@@ -532,6 +583,62 @@ def format_price(snapshot: dict[str, Any]) -> str:
     return f"{amount} {currency or ''}".strip()
 
 
+PRICE_LABEL = "Preis"
+
+
+def configured_price_threshold(config: dict[str, Any]) -> float:
+    try:
+        return parse_price_threshold(config.get("price_threshold_percent", DEFAULT_PRICE_THRESHOLD))
+    except (TypeError, ValueError):
+        return DEFAULT_PRICE_THRESHOLD
+
+
+def format_threshold(value: float, decimal_comma: bool = False) -> str:
+    text = f"{value:g}"
+    return text.replace(".", ",") if decimal_comma else text
+
+
+def price_reference_from(snapshot: dict[str, Any], at: str) -> dict[str, Any]:
+    """Last price that was reported (or used as baseline) for threshold comparisons."""
+    return {
+        "price_amount": snapshot.get("price_amount"),
+        "price_currency": snapshot.get("price_currency"),
+        "price_display": snapshot.get("price_display"),
+        "at": at,
+    }
+
+
+def _as_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def price_change_line(reference: dict[str, Any], new: dict[str, Any], threshold_percent: float) -> str | None:
+    """Describe a price change, or None when it stays below the configured threshold.
+
+    The reference is the last reported price, so gradual drift accumulates until it
+    crosses the threshold instead of being swallowed check by check.
+    """
+    old_key = (reference.get("price_amount"), reference.get("price_currency"))
+    new_key = (new.get("price_amount"), new.get("price_currency"))
+    if old_key == new_key:
+        return None
+    line = f"{PRICE_LABEL}: {format_price(reference)} → {format_price(new)}"
+    old_value = _as_number(reference.get("price_amount"))
+    new_value = _as_number(new.get("price_amount"))
+    if old_key[1] != new_key[1] or old_value is None or new_value is None or old_value == 0:
+        return line  # price appeared, vanished or changed currency: always relevant
+    percent = (new_value - old_value) / old_value * 100
+    if round(abs(percent), 6) < threshold_percent:
+        return None
+    return f"{line} ({f'{percent:+.1f}'.replace('.', ',')} %)"
+
+
 def short_value(value: Any, maximum: int = 90) -> str:
     if value is None or value == "":
         text = "–"
@@ -581,7 +688,12 @@ def diff_catalog_data(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     return changes
 
 
-def diff_snapshots(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+def diff_snapshots(
+    old: dict[str, Any],
+    new: dict[str, Any],
+    price_threshold_percent: float = 0.0,
+    price_reference: dict[str, Any] | None = None,
+) -> list[str]:
     if bool(old.get("accessible")) != bool(new.get("accessible")):
         if new.get("accessible"):
             return [
@@ -611,10 +723,9 @@ def diff_snapshots(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
         if old.get(field) != new.get(field):
             changes.append(f"{label}: {formatter(old.get(field))} → {formatter(new.get(field))}")
 
-    old_price = (old.get("price_amount"), old.get("price_currency"))
-    new_price = (new.get("price_amount"), new.get("price_currency"))
-    if old_price != new_price:
-        changes.append(f"Preis: {format_price(old)} → {format_price(new)}")
+    price_line = price_change_line(price_reference or old, new, price_threshold_percent)
+    if price_line:
+        changes.append(price_line)
 
     if old.get("image_url") != new.get("image_url"):
         changes.append("Produktbild geändert")
@@ -783,6 +894,7 @@ def run_check() -> None:
             raise AppError("Fehlende Amazon-Umgebungsvariablen: " + ", ".join(missing))
 
         client = AmazonCreatorsClient(settings)
+        price_threshold = configured_price_threshold(config)
         now = utc_now()
         checked = 0
         changed = 0
@@ -796,6 +908,7 @@ def run_check() -> None:
                     old_entry = state.setdefault("products", {}).get(asin) or {}
                     old_snapshot = old_entry.get("snapshot")
                     no_featured_offer = has_no_featured_offer(snapshot)
+                    price_reference = old_entry.get("price_reference")
                     entry = {
                         **old_entry,
                         "snapshot": snapshot,
@@ -850,7 +963,10 @@ def run_check() -> None:
                         entry["missing_offer_alerted"] = False
                         entry["last_confirmed_snapshot"] = snapshot
                         entry["last_confirmed_at"] = now
-                        if was_alerted:
+                        if was_alerted and not snapshot.get("accessible"):
+                            # Product vanished after the missing-offer alert: report that, not a recovery.
+                            changes = diff_snapshots(confirmed_snapshot or old_snapshot, snapshot)
+                        elif was_alerted:
                             changes = [
                                 "Featured Offer wird wieder über die Creators API geliefert",
                                 f"Verfügbarkeit: {format_availability(snapshot.get('availability_type'))}",
@@ -859,11 +975,22 @@ def run_check() -> None:
                             if confirmed_snapshot:
                                 changes.extend(diff_catalog_data(confirmed_snapshot, snapshot))
                         elif previous_streak and confirmed_snapshot:
-                            changes = diff_snapshots(confirmed_snapshot, snapshot)
+                            changes = diff_snapshots(
+                                confirmed_snapshot, snapshot, price_threshold, price_reference
+                            )
                         elif previous_streak:
                             changes = diff_catalog_data(old_snapshot, snapshot)
                         else:
-                            changes = diff_snapshots(old_snapshot, snapshot)
+                            changes = diff_snapshots(old_snapshot, snapshot, price_threshold, price_reference)
+                    if snapshot.get("accessible") and not no_featured_offer:
+                        price_reported = any(change.startswith(f"{PRICE_LABEL}:") for change in changes)
+                        same_price = bool(price_reference) and (
+                            price_reference.get("price_amount"),
+                            price_reference.get("price_currency"),
+                        ) == (snapshot.get("price_amount"), snapshot.get("price_currency"))
+                        if not price_reference or price_reported or same_price:
+                            # A freshly fetched identical price may renew the 24-hour cache window.
+                            entry["price_reference"] = price_reference_from(snapshot, now)
                     if changes:
                         changed += 1
                         entry["last_changed"] = now
@@ -1031,7 +1158,7 @@ PAGE = """<!doctype html>
     header{{background:#232f3e;color:#fff;border-bottom:4px solid var(--accent)}} .header-inner{{max-width:1060px;margin:auto;padding:22px 18px;display:flex;align-items:center;gap:14px}} .logo{{width:44px;height:44px}} h1{{font-size:23px;margin:0}} header p{{margin:2px 0 0;color:#cbd3dc;font-size:13px}}
     main{{max-width:1060px;margin:auto;padding:18px}} .grid{{display:grid;grid-template-columns:1.35fr .65fr;gap:16px}} @media(max-width:760px){{.grid{{grid-template-columns:1fr}}}}
     .card{{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:var(--shadow)}} h2{{font-size:17px;margin:0 0 12px}} h3{{font-size:15px;margin:0 0 2px;line-height:1.35}} .muted{{color:var(--muted)}}
-    textarea,input[type=number]{{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;background:var(--bg);color:var(--text);font:inherit}} textarea{{min-height:94px;resize:vertical}} label span{{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}}
+    textarea,input[type=number]{{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;background:var(--bg);color:var(--text);font:inherit}} textarea{{min-height:94px;resize:vertical}} label span{{display:block;font-size:13px;color:var(--muted);margin-bottom:5px}} .field{{display:block;margin-bottom:12px}}
     button,.button{{border:0;border-radius:9px;padding:9px 14px;background:var(--accent2);color:var(--card);font:600 14px/1.3 inherit;cursor:pointer;text-decoration:none;display:inline-block}} header button{{color:#fff}} button.primary{{background:var(--accent);color:#1d2631}} button.secondary,.button.secondary{{background:transparent;color:var(--text);border:1px solid var(--line)}} .actions{{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}} .inline{{display:flex;gap:8px;align-items:end}} .inline label{{flex:1}}
     .flash{{border-radius:10px;padding:11px 14px;margin-bottom:16px;border:1px solid var(--line)}} .flash.ok{{background:var(--goodbg);color:var(--good)}} .flash.error{{background:var(--badbg);color:var(--bad)}}
     .status-list{{display:grid;gap:9px}} .status-row{{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:8px}} .status-row:last-child{{border:0;padding:0}} .dot{{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--bad)}} .dot.ok{{background:var(--good)}}
@@ -1051,7 +1178,7 @@ PAGE = """<!doctype html>
         <h2>ASINs beobachten</h2>
         <form method="post" action="/add">
           <input type="hidden" name="csrf" value="{csrf}">
-          <label><span>Eine oder mehrere ASINs oder Amazon-Produktlinks (Leerzeichen, Komma oder neue Zeile)</span><textarea name="asins" placeholder="B0XXXXXXXXX&#10;https://www.amazon.de/dp/B0YYYYYYYYY" required></textarea></label>
+          <label><span>Eine oder mehrere ASINs, getrennt durch Leerzeichen, Komma oder neue Zeile (keine Links)</span><textarea name="asins" placeholder="B0XXXXXXXX&#10;B0YYYYYYYY" required></textarea></label>
           <div class="actions"><button class="primary" type="submit">Zur Watchlist hinzufügen</button><a class="button secondary" href="/export-asins">ASIN-Liste exportieren</a></div>
         </form>
       </div>
@@ -1074,10 +1201,11 @@ PAGE = """<!doctype html>
         <form method="post" action="/check-now"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">Jetzt prüfen</button></form>
       </div>
       <div class="card">
-        <h2>Prüfintervall</h2>
-        <form method="post" action="/settings" class="inline">
+        <h2>Einstellungen</h2>
+        <form method="post" action="/settings">
           <input type="hidden" name="csrf" value="{csrf}">
-          <label><span>Minuten (5 bis 1440)</span><input type="number" name="interval" min="5" max="1440" value="{interval}" required></label>
+          <label class="field"><span>Prüfintervall in Minuten (5 bis 1440)</span><input type="number" name="interval" min="5" max="1440" value="{interval}" required></label>
+          <label class="field"><span>Preisänderung erst ab Prozent melden (0 = jede Änderung)</span><input type="number" name="price_threshold" min="0" max="100" step="0.1" value="{price_threshold}" required></label>
           <button type="submit">Speichern</button>
         </form>
       </div>
@@ -1119,6 +1247,7 @@ def render_page(message: str = "", is_error: bool = False) -> str:
         last_check=escaped(human_time(state.get("last_check_at"))),
         last_status=escaped(state.get("last_check_status", "–")),
         interval=escaped(config.get("check_interval_minutes", DEFAULT_INTERVAL)),
+        price_threshold=escaped(format_threshold(configured_price_threshold(config))),
         version=APP_VERSION,
     )
 
@@ -1202,9 +1331,7 @@ class Handler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
             if path == "/add":
                 raw = form.get("asins", [""])[0]
-                new_asins = extract_asins(raw)
-                if not new_asins:
-                    raise AppError("Keine gültige 10-stellige ASIN gefunden.")
+                new_asins = parse_asin_input(raw)
                 config = load_config()
                 existing = list(config.get("asins", []))
                 added = [asin for asin in new_asins if asin not in existing]
@@ -1228,14 +1355,26 @@ class Handler(BaseHTTPRequestHandler):
                     save_state(state)
                 self.redirect(f"{asin} wurde entfernt.")
             elif path == "/settings":
-                interval = int(form.get("interval", [str(DEFAULT_INTERVAL)])[0])
+                config = load_config()
+                current_interval = config.get("check_interval_minutes", DEFAULT_INTERVAL)
+                interval = int(form.get("interval", [str(current_interval)])[0])
                 if not 5 <= interval <= MAX_CHECK_INTERVAL_MINUTES:
                     raise AppError("Das Intervall muss zwischen 5 und 1440 Minuten liegen.")
-                config = load_config()
+                threshold_raw = form.get("price_threshold", [""])[0]
+                threshold = (
+                    parse_price_threshold(threshold_raw)
+                    if threshold_raw.strip()
+                    else configured_price_threshold(config)
+                )
                 config["check_interval_minutes"] = interval
+                config["price_threshold_percent"] = threshold
                 save_config(config)
-                check_trigger.set()
-                self.redirect(f"Prüfintervall auf {interval} Minuten gesetzt.")
+                if interval != current_interval:
+                    check_trigger.set()
+                self.redirect(
+                    f"Gespeichert: Prüfintervall {interval} Minuten, "
+                    f"Preisänderungen ab {format_threshold(threshold, decimal_comma=True)} %."
+                )
             elif path == "/check-now":
                 check_trigger.set()
                 self.redirect("Prüfung wurde gestartet.")

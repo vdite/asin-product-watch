@@ -15,9 +15,25 @@ SPEC.loader.exec_module(app)
 
 
 class ProductWatchTests(unittest.TestCase):
-    def test_extract_asins_from_text_and_urls(self):
-        raw = "B09B2SBHQK, https://www.amazon.de/dp/B0ABC12345?tag=x b09b2sbhqk"
-        self.assertEqual(app.extract_asins(raw), ["B09B2SBHQK", "B0ABC12345"])
+    def test_parse_asin_input_accepts_only_asins(self):
+        raw = "B09B2SBHQK, b0abc12345;\n3446264000  B09B2SBHQK"
+        self.assertEqual(app.parse_asin_input(raw), ["B09B2SBHQK", "B0ABC12345", "3446264000"])
+
+    def test_parse_asin_input_rejects_links_and_words(self):
+        for raw in (
+            "https://www.amazon.de/dp/B0ABC12345",
+            "B09B2SBHQK https://www.amazon.de/Xiaomi-Compressor/dp/B0ABC12345",
+            "COMPRESSOR",
+            "B09B2SBHQ",
+            "B09B2SBHQKX",
+            " , ",
+        ):
+            with self.assertRaises(app.AppError, msg=raw):
+                app.parse_asin_input(raw)
+
+    def test_extract_asins_from_messages_ignores_ten_letter_words(self):
+        message = "The ItemId B000000002 is not accessible; Accessible COMPRESSOR"
+        self.assertEqual(app.extract_asins(message), ["B000000002"])
 
     def test_export_contains_only_one_asin_per_line(self):
         exported = app.export_asin_list(
@@ -265,6 +281,103 @@ class ProductWatchTests(unittest.TestCase):
             finally:
                 app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE = original
 
+    def test_price_change_line_respects_threshold(self):
+        ref = {"price_amount": 114.21, "price_currency": "EUR", "price_display": "114,21 €"}
+        tiny = {"price_amount": 114.19, "price_currency": "EUR", "price_display": "114,19 €"}
+        big = {"price_amount": 99.0, "price_currency": "EUR", "price_display": "99,00 €"}
+        self.assertIsNone(app.price_change_line(ref, tiny, 10))
+        self.assertIsNone(app.price_change_line(ref, dict(ref), 0))
+        self.assertEqual(app.price_change_line(ref, tiny, 0), "Preis: 114,21 € → 114,19 € (-0,0 %)")
+        self.assertEqual(app.price_change_line(ref, big, 10), "Preis: 114,21 € → 99,00 € (-13,3 %)")
+        exact = {"price_amount": 90.0, "price_currency": "EUR"}
+        self.assertIsNotNone(app.price_change_line({"price_amount": 100.0, "price_currency": "EUR"}, exact, 10))
+        gone = {"price_amount": None, "price_currency": None}
+        self.assertEqual(app.price_change_line(ref, gone, 10), "Preis: 114,21 € → kein Preis")
+        other_currency = {"price_amount": 114.21, "price_currency": "GBP", "price_display": "£114.21"}
+        self.assertIsNotNone(app.price_change_line(ref, other_currency, 50))
+
+    def test_parse_price_threshold(self):
+        self.assertEqual(app.parse_price_threshold("7,5"), 7.5)
+        self.assertEqual(app.parse_price_threshold("0"), 0)
+        for invalid in ("-1", "101", "nan", "inf", "abc"):
+            with self.assertRaises(ValueError):
+                app.parse_price_threshold(invalid)
+        self.assertEqual(app.configured_price_threshold({"price_threshold_percent": "kaputt"}), app.DEFAULT_PRICE_THRESHOLD)
+
+    def test_price_threshold_accumulates_drift_against_last_reported_price(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            original = (app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE)
+            asin = "B09B2SBHQK"
+
+            def offer(amount):
+                return app.normalize_item(
+                    {
+                        "asin": asin,
+                        "itemInfo": {"title": {"displayValue": "Testprodukt"}},
+                        "offersV2": {
+                            "listings": [
+                                {
+                                    "isBuyBoxWinner": True,
+                                    "availability": {"type": "IN_STOCK"},
+                                    "merchantInfo": {"name": "Amazon"},
+                                    "price": {"money": {"amount": amount, "currency": "EUR"}},
+                                }
+                            ]
+                        },
+                    }
+                )
+
+            environment = {
+                "AMAZON_CREDENTIAL_ID": "id",
+                "AMAZON_CREDENTIAL_SECRET": "secret",
+                "AMAZON_CREDENTIAL_VERSION": "3.2",
+                "AMAZON_PARTNER_TAG": "tag-21",
+                "AMAZON_MARKETPLACE": "www.amazon.de",
+                "PUSHOVER_APP_TOKEN": "token",
+                "PUSHOVER_USER_KEY": "user",
+            }
+            try:
+                app.DATA_DIR = Path(directory)
+                app.CONFIG_FILE = app.DATA_DIR / "config.json"
+                app.STATE_FILE = app.DATA_DIR / "state.json"
+                app.ensure_storage()
+                config = app.load_config()
+                config["asins"] = [asin]
+                config["price_threshold_percent"] = 10
+                app.save_config(config)
+
+                messages = []
+                for amount in (100, 96, 92, 89.99, 88):
+                    with patch.dict(app.os.environ, environment, clear=False), patch.object(
+                        app.AmazonCreatorsClient, "get_items", return_value={asin: offer(amount)}
+                    ), patch.object(app, "send_pushover") as sender:
+                        app.run_check()
+                        messages.append(sender.call_args.args[1] if sender.called else None)
+
+                self.assertEqual(messages[:3], [None, None, None])
+                self.assertIn("Preis: 100 EUR → 89.99 EUR (-10,0 %)", messages[3])
+                self.assertIsNone(messages[4])  # 88 is only 2.2 % below the newly reported 89.99
+                reference = app.load_state()["products"][asin]["price_reference"]
+                self.assertEqual(reference["price_amount"], 89.99)
+            finally:
+                app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE = original
+
+    def test_expired_price_reference_is_purged(self):
+        state = {
+            "products": {
+                "B09B2SBHQK": {"price_reference": {"price_amount": 10, "at": "2026-11-01T10:00:00Z"}},
+                "B000000001": {"price_reference": {"price_amount": 10, "at": "2026-11-03T09:00:00Z"}},
+            },
+            "events": [],
+            "pending_notifications": [],
+        }
+        changed = app.purge_expired_product_content(
+            state, app.datetime.fromisoformat("2026-11-03T10:00:00+00:00")
+        )
+        self.assertTrue(changed)
+        self.assertNotIn("price_reference", state["products"]["B09B2SBHQK"])
+        self.assertIn("price_reference", state["products"]["B000000001"])
+
     def test_missing_offer_alerts_on_second_check_and_recovers(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
             original = (app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE)
@@ -340,6 +453,42 @@ class ProductWatchTests(unittest.TestCase):
             finally:
                 app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE = original
 
+
+    def test_alerted_missing_offer_then_inaccessible_is_not_reported_as_recovery(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            original = (app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE)
+            asin = "B09B2SBHQK"
+            no_offer = app.normalize_item({"asin": asin, "itemInfo": {"title": {"displayValue": "Testprodukt"}}})
+            gone = app.inaccessible_snapshot(asin, "ItemNotAccessible", "not accessible")
+            environment = {
+                "AMAZON_CREDENTIAL_ID": "id",
+                "AMAZON_CREDENTIAL_SECRET": "secret",
+                "AMAZON_CREDENTIAL_VERSION": "3.2",
+                "AMAZON_PARTNER_TAG": "tag-21",
+                "AMAZON_MARKETPLACE": "www.amazon.de",
+                "PUSHOVER_APP_TOKEN": "token",
+                "PUSHOVER_USER_KEY": "user",
+            }
+            try:
+                app.DATA_DIR = Path(directory)
+                app.CONFIG_FILE = app.DATA_DIR / "config.json"
+                app.STATE_FILE = app.DATA_DIR / "state.json"
+                app.ensure_storage()
+                config = app.load_config()
+                config["asins"] = [asin]
+                app.save_config(config)
+                messages = []
+                for snapshot in (no_offer, no_offer, gone):
+                    with patch.dict(app.os.environ, environment, clear=False), patch.object(
+                        app.AmazonCreatorsClient, "get_items", return_value={asin: snapshot}
+                    ), patch.object(app, "send_pushover") as sender:
+                        app.run_check()
+                        messages.append(sender.call_args.args[1] if sender.called else None)
+                self.assertIn("kein Featured Offer", messages[1])
+                self.assertIn("nicht mehr verfügbar", messages[2])
+                self.assertNotIn("wieder", messages[2])
+            finally:
+                app.DATA_DIR, app.CONFIG_FILE, app.STATE_FILE = original
 
 if __name__ == "__main__":
     unittest.main()

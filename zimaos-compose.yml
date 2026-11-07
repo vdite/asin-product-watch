@@ -22,6 +22,7 @@ services:
       PUSHOVER_APP_TOKEN: ""
       PUSHOVER_USER_KEY: ""
       DEFAULT_CHECK_INTERVAL_MINUTES: "60"
+      DEFAULT_PRICE_THRESHOLD_PERCENT: "10"
       MAX_WATCHLIST_SIZE: "500"
       TZ: Europe/Berlin
 
@@ -51,10 +52,10 @@ x-casaos:
   architectures:
     - amd64
     - arm64
-  version: "1.1.0"
-  update_at: "2026-11-03"
+  version: "1.2.0"
+  update_at: "2026-11-07"
   release_notes:
-    en_US: Adds Amazon API compliance notices, 24-hour cache expiration and the trademark-safe app name.
-    de_DE: Ergänzt API-Pflichthinweise, 24-Stunden-Cache-Ablauf und den markensicheren App-Namen.
+    en_US: Adds a configurable price change threshold (default 10 %) so small price fluctuations no longer trigger notifications; input accepts plain ASINs only; fixes a false recovery notice for vanished products.
+    de_DE: Ergänzt eine einstellbare Preisschwelle (Standard 10 %), damit kleine Preisschwankungen keine Nachrichten mehr auslösen; Eingabe nur noch als ASIN; behebt eine falsche Entwarnung bei verschwundenen Produkten.
   repo: https://github.com/vdite/asin-product-watch
   docs: https://github.com/vdite/asin-product-watch#readme
