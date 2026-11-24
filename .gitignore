@@ -11,3 +11,6 @@ agents_chat.md
 *review-notes*
 plan*.md
 *draft*.md
+
+# Claude Code local settings
+.claude/settings.local.json
